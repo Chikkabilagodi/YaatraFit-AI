@@ -553,6 +553,75 @@ test('WEATHER: Forecast parsing and packing advice handles Karnataka regions wit
   assert.ok(ghatsAdvice.items.some((i) => i.toLowerCase().includes('umbrella') || i.toLowerCase().includes('raincoat')));
 });
 
+test('GROUNDING: ChatMessage accepts Google Search and Google Maps grounding chunks and modes', () => {
+  const mapsChunk = {
+    maps: {
+      uri: 'https://maps.google.com/?cid=1234567890',
+      title: 'Mysuru Palace',
+      placeAnswerSources: [{ placeName: 'Mysuru Palace', formattedAddress: 'Sayyaji Rao Rd, Agrahara, Chamrajpura, Mysuru' }],
+    },
+  };
 
+  const searchChunk = {
+    web: {
+      uri: 'https://karnatakatourism.org/destination/hampi',
+      title: 'Hampi Heritage - Karnataka Tourism',
+    },
+  };
+
+  const messageWithGrounding = {
+    id: 'bot-grounded-test',
+    role: 'model' as const,
+    text: 'Mysuru Palace is open from 10:00 AM to 5:30 PM.',
+    timestamp: '10:00 AM',
+    groundingToolUsed: 'googleMaps' as const,
+    groundingChunks: [mapsChunk, searchChunk],
+  };
+
+  assert.equal(messageWithGrounding.groundingToolUsed, 'googleMaps');
+  assert.equal(messageWithGrounding.groundingChunks.length, 2);
+  const first = messageWithGrounding.groundingChunks[0] as { maps?: { title?: string } };
+  const second = messageWithGrounding.groundingChunks[1] as { web?: { title?: string } };
+  assert.equal(first.maps?.title, 'Mysuru Palace');
+  assert.equal(second.web?.title, 'Hampi Heritage - Karnataka Tourism');
+});
+
+test('31 DISTRICTS: All 31 Karnataka districts have rich metadata and curated local destinations', async () => {
+  const { KARNATAKA_DISTRICTS, KARNATAKA_DESTINATIONS, getDestinationsByDistrict } = await import(
+    '../data/karnatakaDestinations.ts'
+  );
+
+  assert.equal(KARNATAKA_DISTRICTS.length, 31, 'Must have exactly 31 Karnataka districts');
+
+  for (const district of KARNATAKA_DISTRICTS) {
+    assert.ok(district.id, `District id must be non-empty: ${district.name}`);
+    assert.ok(district.nameKn, `District must have Kannada name: ${district.name}`);
+    assert.ok(district.tagline, `District must have a tagline: ${district.name}`);
+    assert.ok(
+      district.center.lat >= 11 && district.center.lat <= 19,
+      `District latitude must be within Karnataka: ${district.name}`
+    );
+    assert.ok(
+      district.center.lng >= 74 && district.center.lng <= 79,
+      `District longitude must be within Karnataka: ${district.name}`
+    );
+
+    const places = getDestinationsByDistrict(district.id);
+    assert.ok(
+      places.length >= 1,
+      `District ${district.name} (${district.id}) must have at least 1 curated local destination`
+    );
+
+    for (const place of places) {
+      assert.ok(place.id, `Destination id required: ${place.name}`);
+      assert.ok(place.nameKn, `Destination Kannada name required: ${place.name}`);
+      assert.ok(place.categories.length > 0, `Categories required: ${place.name}`);
+      assert.ok(Number.isFinite(place.expectedVisitMinutes), `Expected visit minutes required: ${place.name}`);
+      assert.ok(Number.isFinite(place.entryFeeInrPerPerson), `Entry fee required: ${place.name}`);
+      assert.ok(place.coordinates.lat >= 11 && place.coordinates.lat <= 19);
+      assert.ok(place.coordinates.lng >= 74 && place.coordinates.lng <= 79);
+    }
+  }
+});
 
 

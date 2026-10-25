@@ -308,18 +308,46 @@ Feasible within deadline & reserve: ${proposal.isFeasible}.`;
     }
   });
 
-  // 5. POST /api/ai/chat — Ytrika AI Travel Companion Chatbot
+  // 5. POST /api/ai/chat — Ytrika AI Travel Companion with Google Search & Google Maps Grounding
   app.post('/api/ai/chat', async (req, res) => {
     try {
-      const messages = (req.body?.messages || []) as Array<{
+      const rawMessages = (req.body?.messages || []) as Array<{
         role: 'user' | 'model';
         text: string;
       }>;
       const context = req.body?.context;
+      const requestedMode = (req.body?.groundingMode as 'auto' | 'maps' | 'search') || 'auto';
 
-      if (!Array.isArray(messages) || messages.length === 0) {
+      if (!Array.isArray(rawMessages) || rawMessages.length === 0) {
         res.status(400).json({ error: 'At least one message is required.' });
         return;
+      }
+
+      // Filter and sanitize history so Gemini multi-turn strictly alternates and begins with 'user'
+      const cleanMessages = rawMessages.filter(
+        (m) => m && typeof m.text === 'string' && m.text.trim().length > 0
+      );
+      const firstUserIdx = cleanMessages.findIndex((m) => m.role === 'user');
+      const validHistory = firstUserIdx >= 0 ? cleanMessages.slice(firstUserIdx) : cleanMessages;
+
+      if (validHistory.length === 0) {
+        res.status(400).json({ error: 'At least one user message is required.' });
+        return;
+      }
+
+      const sanitizedContents: Array<{ role: 'user' | 'model'; parts: [{ text: string }] }> = [];
+      for (const msg of validHistory) {
+        const role = msg.role === 'user' ? 'user' : 'model';
+        const text = msg.text.trim();
+        const lastEntry = sanitizedContents[sanitizedContents.length - 1];
+        if (lastEntry && lastEntry.role === role) {
+          lastEntry.parts[0].text += `\n\n${text}`;
+        } else {
+          sanitizedContents.push({
+            role,
+            parts: [{ text }],
+          });
+        }
       }
 
       const systemInstruction = `You are Ytrika (ಯಾತ್ರಿಕಾ), an expert, warm, and highly knowledgeable Karnataka travel companion in the Yaatra Fit AI app.
@@ -336,39 +364,125 @@ Current traveller context:
 ${context ? JSON.stringify(context, null, 2) : 'None provided'}
 `;
 
-      const { data: replyText, error: aiError } = await callGeminiWithRetry(
+      const lastUserQuery = (validHistory[validHistory.length - 1]?.text || '').trim();
+      const lastUserQueryLower = lastUserQuery.toLowerCase();
+
+      // Determine whether query asks for places/routes/geography/locations vs news/updates/facts
+      const isPlacesQuery =
+        requestedMode === 'maps' ||
+        (requestedMode === 'auto' &&
+          /(place|places|location|locations|route|routes|direction|directions|where is|how far|distance|ghat|pass|falls|waterfall|temple|beach|hill|fort|hotel|stay|sanctuary|national park|reach|drive|nearest|map|maps|spot|stops|attraction|taluk|district|monument)/i.test(
+            lastUserQueryLower
+          ));
+
+      const { data: chatResult, error: aiError } = await callGeminiWithRetry(
         async (ai) => {
-          // Gemini multi-turn conversation must begin with a user message
-          const firstUserIdx = messages.findIndex((m) => m.role === 'user');
-          const validHistory = firstUserIdx >= 0 ? messages.slice(firstUserIdx) : messages;
+          let toolChoice: 'googleMaps' | 'googleSearch' | 'none' = isPlacesQuery
+            ? 'googleMaps'
+            : 'googleSearch';
+          let response: any = null;
 
-          const contents = validHistory.map((m) => ({
-            role: m.role,
-            parts: [{ text: m.text }],
-          }));
+          // Attempt with primary selected tool (Google Maps or Google Search)
+          try {
+            if (toolChoice === 'googleMaps') {
+              response = await ai.models.generateContent({
+                model: 'gemini-3.8-flash',
+                contents: sanitizedContents,
+                config: {
+                  systemInstruction,
+                  tools: [{ googleMaps: {} }],
+                },
+              });
+            } else {
+              response = await ai.models.generateContent({
+                model: 'gemini-3.8-flash',
+                contents: sanitizedContents,
+                config: {
+                  systemInstruction,
+                  tools: [{ googleSearch: {} }],
+                },
+              });
+            }
+          } catch (firstErr) {
+            console.warn(`Primary grounding tool (${toolChoice}) failed; attempting secondary:`, firstErr);
+            // Fallback between maps <-> search if first tool hit a constraint
+            try {
+              if (toolChoice === 'googleMaps') {
+                toolChoice = 'googleSearch';
+                response = await ai.models.generateContent({
+                  model: 'gemini-3.8-flash',
+                  contents: sanitizedContents,
+                  config: {
+                    systemInstruction,
+                    tools: [{ googleSearch: {} }],
+                  },
+                });
+              } else {
+                toolChoice = 'none';
+                response = await ai.models.generateContent({
+                  model: 'gemini-3.8-flash',
+                  contents: sanitizedContents,
+                  config: {
+                    systemInstruction,
+                  },
+                });
+              }
+            } catch (secErr) {
+              toolChoice = 'none';
+              response = await ai.models.generateContent({
+                model: 'gemini-3.8-flash',
+                contents: sanitizedContents,
+                config: {
+                  systemInstruction,
+                },
+              });
+            }
+          }
 
-          const response = await ai.models.generateContent({
-            model: 'gemini-3.8-flash',
-            contents,
-            config: {
-              systemInstruction,
-            },
-          });
+          const replyText = (response?.text || '').trim();
+          const candidate = response?.candidates?.[0];
+          const rawGroundingChunks = (candidate?.groundingMetadata?.groundingChunks || []) as any[];
 
-          return (response.text || '').trim();
+          const groundingChunks = rawGroundingChunks
+            .map((chunk) => {
+              const item: any = {};
+              if (chunk.web?.uri) {
+                item.web = {
+                  uri: chunk.web.uri,
+                  title: chunk.web.title || chunk.web.uri,
+                };
+              }
+              if (chunk.maps?.uri || chunk.maps?.title) {
+                item.maps = {
+                  uri: chunk.maps.uri || '',
+                  title: chunk.maps.title || 'View on Google Maps',
+                  placeAnswerSources: chunk.maps.placeAnswerSources,
+                };
+              }
+              return item;
+            })
+            .filter((c) => c.web || c.maps);
+
+          return {
+            reply: replyText,
+            groundingChunks,
+            toolUsed: toolChoice,
+          };
         }
       );
 
-      if (replyText) {
+      if (chatResult && chatResult.reply) {
         res.json({
-          reply: replyText,
+          reply: chatResult.reply,
+          groundingChunks: chatResult.groundingChunks || [],
+          groundingToolUsed: chatResult.toolUsed,
           aiUsed: true,
         });
         return;
       }
 
       // Fallback deterministic Ytrika assistant if Gemini is offline or unkeyed
-      const lastUserMsg = (messages[messages.length - 1]?.text || '').toLowerCase();
+      const lastUserMsg = (validHistory[validHistory.length - 1]?.text || '').toLowerCase();
       let fallback = `Namaskara! I am Ytrika, your Karnataka travel guide. `;
       if (lastUserMsg.includes('food') || lastUserMsg.includes('eat') || lastUserMsg.includes('dosa')) {
         fallback += `For authentic Karnataka food, don't miss Original Mylari Dosa in Mysuru (Nazarbad), Jolada Rotti meals in Hubballi-Dharwad, or Mangalore Buns & Neer Dosa along the Karavali coast. Remember to keep discretionary snacks within your daily food allowance!`;
@@ -384,6 +498,8 @@ ${context ? JSON.stringify(context, null, 2) : 'None provided'}
 
       res.json({
         reply: fallback,
+        groundingChunks: [],
+        groundingToolUsed: 'none',
         aiUsed: false,
         aiNotice: aiError || null,
       });

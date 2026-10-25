@@ -9,7 +9,10 @@ import {
   Compass,
   AlertCircle,
   Loader2,
-  MessageSquareText,
+  ExternalLink,
+  Search,
+  Navigation,
+  Globe,
 } from 'lucide-react';
 import type { BudgetSummary, ChatMessage, Trip } from '../types/travel.ts';
 
@@ -124,6 +127,7 @@ How can I help plan or refine your Karnataka journey today?`,
     },
   ]);
 
+  const [groundingMode, setGroundingMode] = useState<'auto' | 'maps' | 'search'>('auto');
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -164,6 +168,7 @@ How can I help plan or refine your Karnataka journey today?`,
           role: m.role,
           text: m.text,
         })),
+        groundingMode,
         context: {
           district: trip.preferences.targetDistrict,
           tripTitle: trip.title,
@@ -199,6 +204,8 @@ How can I help plan or refine your Karnataka journey today?`,
           hour: '2-digit',
           minute: '2-digit',
         }),
+        groundingChunks: Array.isArray(data.groundingChunks) ? data.groundingChunks : [],
+        groundingToolUsed: data.groundingToolUsed || 'none',
       };
 
       setMessages((prev) => [...prev, botMessage]);
@@ -215,6 +222,8 @@ How can I help plan or refine your Karnataka journey today?`,
           hour: '2-digit',
           minute: '2-digit',
         }),
+        groundingChunks: [],
+        groundingToolUsed: 'none',
       };
       setMessages((prev) => [...prev, fallbackMessage]);
     } finally {
@@ -257,7 +266,7 @@ How can I help plan or refine your Karnataka journey today?`,
               </span>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              Context-aware Karnataka specialist · Real-time route, budget & cultural advisory
+              Powered by Gemini 3.8 Flash with Google Search & Google Maps Grounding
             </p>
           </div>
         </div>
@@ -285,8 +294,53 @@ How can I help plan or refine your Karnataka journey today?`,
         </div>
       </div>
 
+      {/* Grounding Mode Strip */}
+      <div className="px-6 py-2 bg-[#0d1424] border-b border-white/[0.06] flex flex-wrap items-center justify-between gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 text-xs text-slate-400">
+          <Globe className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          <span className="font-medium text-slate-300">Grounding Source:</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setGroundingMode('auto')}
+            className={`px-2.5 py-1 rounded-md text-xs font-mono transition-colors cursor-pointer ${
+              groundingMode === 'auto'
+                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/50'
+                : 'text-slate-400 hover:text-slate-200 border border-transparent'
+            }`}
+          >
+            Auto (Smart Route)
+          </button>
+          <button
+            type="button"
+            onClick={() => setGroundingMode('maps')}
+            className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-mono transition-colors cursor-pointer ${
+              groundingMode === 'maps'
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/50'
+                : 'text-slate-400 hover:text-slate-200 border border-transparent'
+            }`}
+          >
+            <Navigation className="w-3 h-3 text-emerald-400" />
+            Google Maps
+          </button>
+          <button
+            type="button"
+            onClick={() => setGroundingMode('search')}
+            className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-mono transition-colors cursor-pointer ${
+              groundingMode === 'search'
+                ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/50'
+                : 'text-slate-400 hover:text-slate-200 border border-transparent'
+            }`}
+          >
+            <Search className="w-3 h-3 text-cyan-400" />
+            Google Search
+          </button>
+        </div>
+      </div>
+
       {/* Quick Prompt Bar */}
-      <div className="px-6 py-2.5 bg-[#101726]/40 border-b border-white/[0.06] overflow-x-auto flex items-center gap-2 scrollbar-none shrink-0">
+      <div className="px-6 py-2 bg-[#101726]/40 border-b border-white/[0.06] overflow-x-auto flex items-center gap-2 scrollbar-none shrink-0">
         <span className="text-[11px] font-mono uppercase tracking-wider text-amber-400/90 whitespace-nowrap shrink-0 flex items-center gap-1.5">
           <Compass className="w-3.5 h-3.5 text-amber-400" />
           Prompt Suggestions:
@@ -334,6 +388,63 @@ How can I help plan or refine your Karnataka journey today?`,
                   }`}
                 >
                   <FormattedMessageText text={msg.text} isUser={isUser} />
+
+                  {/* Grounding Source Badges with Clickable Links */}
+                  {!isUser && msg.groundingChunks && msg.groundingChunks.length > 0 && (
+                    <div className="mt-3.5 pt-3 border-t border-white/[0.08] space-y-1.5">
+                      <div className="text-[11px] font-mono text-amber-300/90 flex items-center gap-1.5">
+                        {msg.groundingToolUsed === 'googleMaps' ? (
+                          <Navigation className="w-3 h-3 text-emerald-400" />
+                        ) : (
+                          <Search className="w-3 h-3 text-cyan-400" />
+                        )}
+                        <span>
+                          {msg.groundingToolUsed === 'googleMaps'
+                            ? 'Google Maps Places Grounding'
+                            : 'Google Search Sources'}:
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2 pt-0.5">
+                        {msg.groundingChunks.map((chunk, idx) => {
+                          if (chunk.maps && chunk.maps.uri) {
+                            return (
+                              <a
+                                key={idx}
+                                href={chunk.maps.uri}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs bg-emerald-950/40 hover:bg-emerald-900/60 text-emerald-300 border border-emerald-500/30 hover:border-emerald-400/60 transition-colors"
+                              >
+                                <MapPin className="w-3 h-3 text-emerald-400 shrink-0" />
+                                <span className="truncate max-w-[220px]">
+                                  {chunk.maps.title || 'View on Google Maps'}
+                                </span>
+                                <ExternalLink className="w-2.5 h-2.5 text-emerald-400/70 shrink-0" />
+                              </a>
+                            );
+                          }
+                          if (chunk.web && chunk.web.uri) {
+                            return (
+                              <a
+                                key={idx}
+                                href={chunk.web.uri}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs bg-cyan-950/40 hover:bg-cyan-900/60 text-cyan-300 border border-cyan-500/30 hover:border-cyan-400/60 transition-colors"
+                              >
+                                <Search className="w-3 h-3 text-cyan-400 shrink-0" />
+                                <span className="truncate max-w-[220px]">
+                                  {chunk.web.title || chunk.web.uri}
+                                </span>
+                                <ExternalLink className="w-2.5 h-2.5 text-cyan-400/70 shrink-0" />
+                              </a>
+                            );
+                          }
+                          return null;
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div
                   className={`text-[10px] text-slate-400 font-mono ${
@@ -354,7 +465,13 @@ How can I help plan or refine your Karnataka journey today?`,
             </div>
             <div className="p-4 rounded-2xl rounded-tl-none bg-[#101726] border border-white/[0.08] text-xs text-slate-300 flex items-center gap-2">
               <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
-              <span>Ytrika is finding authentic Karnataka insights...</span>
+              <span>
+                {groundingMode === 'maps'
+                  ? 'Ytrika is grounding location places on Google Maps...'
+                  : groundingMode === 'search'
+                  ? 'Ytrika is verifying live data with Google Search...'
+                  : 'Ytrika is finding authentic Karnataka insights with Google Search & Maps...'}
+              </span>
             </div>
           </div>
         )}
@@ -406,3 +523,4 @@ How can I help plan or refine your Karnataka journey today?`,
     </div>
   );
 };
+

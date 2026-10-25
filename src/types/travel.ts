@@ -351,15 +351,33 @@ export interface WhatIfComparisonResult {
   summaryExplanation: string;
 }
 
+export interface GroundingChunk {
+  web?: {
+    uri: string;
+    title: string;
+  };
+  maps?: {
+    uri?: string;
+    title?: string;
+    placeAnswerSources?: Array<{
+      placeName?: string;
+      formattedAddress?: string;
+    }>;
+  };
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'model';
   text: string;
   timestamp: string;
+  groundingChunks?: GroundingChunk[];
+  groundingToolUsed?: 'googleSearch' | 'googleMaps' | 'none';
 }
 
 export interface ChatRequestPayload {
   messages: Array<{ role: 'user' | 'model'; text: string }>;
+  groundingMode?: 'auto' | 'maps' | 'search';
   context?: {
     district?: string;
     tripTitle?: string;
@@ -370,4 +388,5 @@ export interface ChatRequestPayload {
     stops?: Array<{ name: string; completed?: boolean }>;
   };
 }
+
 
